@@ -380,6 +380,18 @@
   .trend-chart-svg .grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.5; }
   .trend-chart-svg .data-line { stroke: var(--accent); stroke-width: 2; fill: none; }
   .trend-chart-svg .data-point { fill: var(--accent); }
+  .trend-chart-svg .pr-point { fill: #ffd700; stroke: var(--bg); stroke-width: 2; }
+  .pr-row { background: rgba(255, 215, 0, 0.06); }
+  .pr-badge {
+    color: #ffd700 !important;
+    font-weight: 600;
+    animation: pr-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pr-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  .set-row.pr { background: rgba(255, 215, 0, 0.08); border-left: 3px solid #ffd700; padding-left: 6px; margin-left: -9px; }
   .trend-chart-svg .axis-text { fill: var(--text-dim); font-size: 10px; font-family: inherit; }
   .trend-chart-svg .data-label { fill: var(--text); font-size: 10px; font-family: inherit; }
   .trend-table {
@@ -405,6 +417,7 @@
   <header>
     <h1>Workout Coach</h1>
     <div class="toolbar">
+      <button class="ghost" id="btn-units" title="Toggle weight unit">kg</button>
       <button class="ghost" id="btn-export" title="Download history JSON">Export</button>
       <button class="ghost" id="btn-import" title="Load history JSON">Import</button>
       <input type="file" id="file-input" accept="application/json" class="hidden">
@@ -668,12 +681,38 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Migrate: ensure bodyLogs array exists
+      // Migrate: ensure new fields exist on old saves
       if (!parsed.bodyLogs) parsed.bodyLogs = [];
+      if (!parsed.settings) parsed.settings = { units: "kg" };
+      if (!parsed.settings.units) parsed.settings.units = "kg";
       return parsed;
     }
   } catch (e) { console.warn("Failed to load state", e); }
-  return { workouts: [], bodyLogs: [] };
+  return { workouts: [], bodyLogs: [], settings: { units: "kg" } };
+}
+
+// ============================================================
+// Units & weight formatting
+// ============================================================
+// Internal storage is always kg. Display + input convert based on user setting.
+const LB_PER_KG = 2.20462;
+function toKg(displayValue) {
+  if (displayValue == null || isNaN(displayValue)) return null;
+  return state.settings.units === "lbs" ? displayValue / LB_PER_KG : displayValue;
+}
+function fromKg(kg) {
+  if (kg == null) return null;
+  const v = state.settings.units === "lbs" ? kg * LB_PER_KG : kg;
+  return Math.round(v * 10) / 10;
+}
+function unitLabel() { return state.settings.units; }
+function fmtWeight(kg) {
+  if (kg == null) return "?";
+  return `${fromKg(kg)}${unitLabel()}`;
+}
+function epley1RM(weightKg, reps) {
+  if (weightKg == null || reps == null || reps <= 0) return null;
+  return weightKg * (1 + reps / 30);
 }
 
 function saveState() {
@@ -761,30 +800,42 @@ function lastSessionFor(exerciseName) {
   return null;
 }
 
-// Returns an array of { date, sets, topWeight, topReps, volume } for an exercise,
-// sorted oldest → newest.
+// Returns an array of { date, sets, topWeight, topReps, volume, e1RM, isPR } for an exercise,
+// sorted oldest → newest. isPR is true when that session set a new e1RM record.
 function getExerciseHistory(name) {
   const entries = [];
   for (const w of state.workouts) {
     const ex = w.exercises.find(e => e.name === name);
     if (!ex || ex.sets.length === 0) continue;
-    // Top set = heaviest weight (ties broken by most reps); ignore null weights
     const withWeight = ex.sets.filter(s => s.weight != null && s.reps != null);
     if (withWeight.length === 0) {
-      // Bodyweight or unweighted — use reps only
       const topReps = Math.max(...ex.sets.filter(s => s.reps != null).map(s => s.reps), 0);
-      entries.push({ date: w.date, sets: ex.sets, topWeight: null, topReps, volume: 0 });
+      entries.push({ date: w.date, sets: ex.sets, topWeight: null, topReps, volume: 0, e1RM: null, isPR: false });
       continue;
     }
+    // Top set by heaviest weight (ties: more reps wins)
     const top = withWeight.reduce((best, s) => {
       if (s.weight > best.weight) return s;
       if (s.weight === best.weight && (s.reps ?? 0) > (best.reps ?? 0)) return s;
       return best;
     }, withWeight[0]);
+    // Session e1RM = best e1RM across all sets in this session
+    const e1RM = Math.max(...withWeight.map(s => epley1RM(s.weight, s.reps) || 0));
     const volume = ex.sets.reduce((sum, s) => sum + (s.weight ?? 0) * (s.reps ?? 0), 0);
-    entries.push({ date: w.date, sets: ex.sets, topWeight: top.weight, topReps: top.reps, volume });
+    entries.push({ date: w.date, sets: ex.sets, topWeight: top.weight, topReps: top.reps, volume, e1RM });
   }
-  return entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  const sorted = entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  // Mark each session as a PR if its e1RM exceeded all prior sessions
+  let runningMax = 0;
+  for (const e of sorted) {
+    if (e.e1RM != null && e.e1RM > runningMax) {
+      e.isPR = runningMax > 0;
+      runningMax = e.e1RM;
+    } else {
+      e.isPR = false;
+    }
+  }
+  return sorted;
 }
 
 // Returns all distinct exercise names that appear in history,
@@ -825,7 +876,7 @@ function renderTrends() {
       return best;
     }, null);
     const summary = topSet
-      ? `${topSet.reps ?? "?"} × ${topSet.weight}kg top set`
+      ? `${topSet.reps ?? "?"} × ${fmtWeight(topSet.weight)} top set`
       : `${e.lastSets[0]?.reps ?? "?"} reps`;
     return `
       <div class="trend-row" data-trend="${encodeURIComponent(e.name)}">
@@ -858,10 +909,10 @@ function showTrendDetail(name) {
 
 function renderChart(history) {
   if (history.length === 0) return `<div class="empty">No data.</div>`;
-  // Use top weight; if all bodyweight, use top reps as Y
+  // Use top weight (in user's unit); if all bodyweight, use top reps as Y
   const useReps = history.every(h => h.topWeight == null);
-  const yVals = history.map(h => useReps ? h.topReps : h.topWeight);
-  const yLabel = useReps ? "reps" : "kg";
+  const yVals = history.map(h => useReps ? h.topReps : fromKg(h.topWeight));
+  const yLabel = useReps ? "reps" : unitLabel();
   const yMin = Math.max(0, Math.min(...yVals) - (Math.max(...yVals) - Math.min(...yVals)) * 0.2);
   const yMax = Math.max(...yVals) + (Math.max(...yVals) - yMin) * 0.15 || Math.max(...yVals) + 5;
   const w = 600, h = 220;
@@ -878,9 +929,10 @@ function renderChart(history) {
   const dataPoints = yVals.map((v, i) => {
     const h2 = history[i];
     const label = useReps ? `${v}` : `${h2.topReps}×${v}`;
+    const ptClass = h2.isPR ? "data-point pr-point" : "data-point";
     return `
-      <circle class="data-point" cx="${xFor(i)}" cy="${yFor(v)}" r="3"></circle>
-      <text class="data-label" x="${xFor(i)}" y="${yFor(v) - 8}" text-anchor="middle">${label}</text>
+      <circle class="${ptClass}" cx="${xFor(i)}" cy="${yFor(v)}" r="${h2.isPR ? 5 : 3}"></circle>
+      <text class="data-label" x="${xFor(i)}" y="${yFor(v) - 8}" text-anchor="middle">${label}${h2.isPR ? " 🏆" : ""}</text>
     `;
   }).join("");
 
@@ -919,22 +971,25 @@ function renderTrendTable(history) {
   return `
     <table class="trend-table">
       <thead>
-        <tr><th>Date</th><th>Sets</th><th>Top set</th><th>Volume</th></tr>
+        <tr><th>Date</th><th>Sets</th><th>Top set</th><th>e1RM</th><th>Volume</th></tr>
       </thead>
       <tbody>
         ${rows.map(r => {
           const d = new Date(r.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
           const setsStr = r.sets.map(s =>
-            `${s.reps ?? "?"}${s.weight != null ? `@${s.weight}` : ""}`
+            `${s.reps ?? "?"}${s.weight != null ? `@${fromKg(s.weight)}` : ""}${s.pr ? "🏆" : ""}`
           ).join(", ");
           const topStr = r.topWeight != null
-            ? `${r.topReps} × ${r.topWeight}kg`
+            ? `${r.topReps} × ${fmtWeight(r.topWeight)}${r.isPR ? " 🏆" : ""}`
             : `${r.topReps} reps`;
-          return `<tr>
+          const e1RMStr = r.e1RM != null ? fmtWeight(r.e1RM) : "—";
+          const volumeStr = r.volume > 0 ? Math.round(fromKg(r.volume)) + ` ${unitLabel()}·reps` : "—";
+          return `<tr${r.isPR ? ' class="pr-row"' : ""}>
             <td>${d}</td>
             <td>${setsStr}</td>
             <td>${topStr}</td>
-            <td>${r.volume > 0 ? Math.round(r.volume) + " kg·reps" : "—"}</td>
+            <td>${e1RMStr}</td>
+            <td>${volumeStr}</td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -1166,7 +1221,7 @@ function renderExerciseCard() {
         </div>
         ${entries.map(({ ex, idx }) => {
           const lastHint = ex.lastDate
-            ? `<div class="exercise-muscles" style="color: var(--accent);">last: ${ex.sets.map(s => `${s.reps ?? "?"}${s.weight != null ? `@${s.weight}` : ""}`).join(", ")}</div>`
+            ? `<div class="exercise-muscles" style="color: var(--accent);">last: ${ex.sets.map(s => `${s.reps ?? "?"}${s.weight != null ? `@${fromKg(s.weight)}${unitLabel()}` : ""}`).join(", ")}</div>`
             : `<div class="exercise-muscles" style="color: var(--text-dim); font-style: italic;">first time</div>`;
           return `
           <div class="exercise-item">
@@ -1201,18 +1256,19 @@ function renderSets(ex, exIdx) {
   return ex.sets.map((s, sIdx) => {
     const cur = isCurrentSet(ex.pairKey, ex.pairPos, sIdx);
     const done = s.completed === true;
-    const rowCls = cur ? "current" : (done ? "done" : "");
+    const rowCls = (cur ? "current " : (done ? "done " : "")) + (s.pr ? "pr" : "");
     const disabled = done ? "disabled" : "";
     const lastCell = done
-      ? `<span class="set-status">✓</span>`
+      ? (s.pr ? `<span class="set-status pr-badge">🏆 PR</span>` : `<span class="set-status">✓</span>`)
       : cur
         ? `<button class="btn-done" data-done="${exIdx}:${sIdx}">✓ Done</button>`
         : `<button class="icon-btn" data-remove-set="${exIdx}:${sIdx}" title="Remove set">×</button>`;
+    const displayWeight = s.weight != null ? fromKg(s.weight) : "";
     return `
       <div class="set-row ${rowCls}">
         <label>${sIdx + 1}</label>
         <input type="number" min="0" step="1" placeholder="reps" value="${s.reps ?? ""}" data-field="reps" data-ex="${exIdx}" data-set="${sIdx}" ${disabled}>
-        <input type="number" min="0" step="0.5" placeholder="weight" value="${s.weight ?? ""}" data-field="weight" data-ex="${exIdx}" data-set="${sIdx}" ${disabled}>
+        <input type="number" min="0" step="0.5" placeholder="${unitLabel()}" value="${displayWeight}" data-field="weight" data-ex="${exIdx}" data-set="${sIdx}" ${disabled}>
         ${lastCell}
       </div>
     `;
@@ -1245,18 +1301,48 @@ function attachExerciseHandlers() {
       const exIdx = +input.dataset.ex;
       const sIdx = +input.dataset.set;
       const field = input.dataset.field;
-      const val = input.value === "" ? null : Math.max(0, parseFloat(input.value));
+      const raw = input.value === "" ? null : Math.max(0, parseFloat(input.value));
+      // Weight is stored in kg internally; convert from display unit on input
+      const val = field === "weight" ? toKg(raw) : raw;
       workInProgress.exercises[exIdx].sets[sIdx][field] = val;
     };
   });
   document.querySelectorAll("[data-done]").forEach(btn => {
     btn.onclick = () => {
       const [exIdx, sIdx] = btn.dataset.done.split(":").map(Number);
-      workInProgress.exercises[exIdx].sets[sIdx].completed = true;
+      const ex = workInProgress.exercises[exIdx];
+      const set = ex.sets[sIdx];
+      set.completed = true;
+      // PR detection — compare e1RM against best previous session for this exercise
+      checkForPR(ex, set);
       advanceWorkoutState();
       renderExerciseCard();
     };
   });
+}
+
+function checkForPR(ex, set) {
+  if (set.weight == null || set.reps == null) return;
+  const currentE1RM = epley1RM(set.weight, set.reps);
+  if (currentE1RM == null) return;
+  // Best e1RM from prior sessions only (don't count the in-progress workout)
+  const history = state.workouts.filter(w => w.exercises.some(e => e.name === ex.name));
+  let bestPrior = 0;
+  for (const w of history) {
+    const match = w.exercises.find(e => e.name === ex.name);
+    if (!match) continue;
+    for (const s of match.sets) {
+      const e = epley1RM(s.weight, s.reps);
+      if (e != null && e > bestPrior) bestPrior = e;
+    }
+  }
+  if (currentE1RM > bestPrior && bestPrior > 0) {
+    set.pr = true;
+    toast(`🏆 New PR on ${ex.name}: ${set.reps} × ${fmtWeight(set.weight)} (e1RM ${fmtWeight(currentE1RM)})`);
+  } else if (bestPrior === 0) {
+    // First time ever — not a "PR" since there's no baseline
+    // (no toast — first session)
+  }
 }
 
 function saveWorkout() {
@@ -1315,7 +1401,7 @@ function renderHistory() {
         <div class="history-detail" id="detail-${w.id}">
           <ul>
             ${w.exercises.map(ex => `
-              <li><strong>${ex.name}</strong>: ${ex.sets.map(s => `${s.reps ?? "?"}${s.weight ? ` @ ${s.weight}` : ""}`).join(", ")}</li>
+              <li><strong>${ex.name}</strong>: ${ex.sets.map(s => `${s.reps ?? "?"}${s.weight != null ? ` @ ${fromKg(s.weight)}${unitLabel()}` : ""}${s.pr ? " 🏆" : ""}`).join(", ")}</li>
             `).join("")}
           </ul>
         </div>
@@ -1475,6 +1561,17 @@ document.getElementById("btn-trend-back").onclick = () => {
   trendDetailExercise = null;
   document.getElementById("trend-detail-card").classList.add("hidden");
 };
+function updateUnitsButton() {
+  document.getElementById("btn-units").textContent = unitLabel();
+}
+document.getElementById("btn-units").onclick = () => {
+  state.settings.units = state.settings.units === "kg" ? "lbs" : "kg";
+  saveState();
+  updateUnitsButton();
+  render();
+  toast(`Switched to ${unitLabel()}.`);
+};
+updateUnitsButton();
 
 render();
 </script>
