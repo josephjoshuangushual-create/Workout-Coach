@@ -290,9 +290,76 @@
     z-index: 100;
   }
   .toast.show { opacity: 1; }
+  .rest-timer {
+    background: var(--surface-2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .rest-timer .timer-label { font-size: 12px; color: var(--text-dim); }
+  .rest-timer .timer-display {
+    font-size: 36px;
+    font-weight: 700;
+    font-family: SF Mono, Menlo, monospace;
+    color: var(--accent);
+    margin: 4px 0;
+  }
+  .rest-timer .timer-phase { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+  .rest-timer button { padding: 4px 14px; font-size: 12px; }
+  .superset.inactive { opacity: 0.55; }
+  .superset.current { box-shadow: 0 0 0 1px var(--accent); }
+  .set-row.current {
+    background: rgba(88, 166, 255, 0.12);
+    border-left: 3px solid var(--accent);
+    padding-left: 6px;
+    margin-left: -9px;
+  }
+  .set-row.done { opacity: 0.55; }
+  .set-row.done input { color: var(--good); }
+  .btn-done {
+    background: var(--accent);
+    color: #0d1117;
+    border: none;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .btn-done:hover { background: #79b8ff; }
+  .set-status {
+    font-size: 12px;
+    color: var(--good);
+    text-align: center;
+  }
+  .body-log-form {
+    display: grid;
+    gap: 10px;
+  }
+  .body-log-form label {
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    color: var(--text-dim);
+    gap: 4px;
+  }
+  .body-log-form button { margin-top: 4px; }
+  .body-log-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    font-size: 14px;
+  }
+  .body-log-row .meta { color: var(--text-dim); font-size: 12px; }
   @media (max-width: 480px) {
     .split-picker { grid-template-columns: repeat(2, 1fr); }
     header h1 { font-size: 18px; }
+    .tabs { overflow-x: auto; }
   }
 </style>
 </head>
@@ -311,6 +378,7 @@
     <button class="tab active" data-tab="today">Today</button>
     <button class="tab" data-tab="history">History</button>
     <button class="tab" data-tab="recovery">Recovery</button>
+    <button class="tab" data-tab="progress">Progress</button>
   </div>
 
   <section id="tab-today">
@@ -321,6 +389,12 @@
     </div>
     <div class="card hidden" id="exercise-card">
       <h2 id="exercise-card-title">Exercises</h2>
+      <div class="rest-timer hidden" id="rest-timer">
+        <div class="timer-label">Rest period</div>
+        <div class="timer-display" id="timer-display">00:00</div>
+        <div class="timer-phase" id="timer-phase"></div>
+        <button class="ghost" id="btn-skip-timer">Skip rest</button>
+      </div>
       <ul class="exercise-list" id="exercise-list"></ul>
       <div class="save-bar">
         <button class="ghost" id="btn-cancel">Cancel</button>
@@ -347,6 +421,31 @@
       <div class="muscle-grid" id="muscle-grid"></div>
     </div>
   </section>
+
+  <section id="tab-progress" class="hidden">
+    <div class="card">
+      <h2>Log a body measurement</h2>
+      <div class="body-log-form">
+        <label>Weight (kg)
+          <input type="number" id="body-weight" min="0" step="0.1" placeholder="e.g. 78.5">
+        </label>
+        <label>Body fat % (optional)
+          <input type="number" id="body-fat" min="0" max="100" step="0.1" placeholder="e.g. 18.2">
+        </label>
+        <label>Waist (cm, optional)
+          <input type="number" id="body-waist" min="0" step="0.1" placeholder="e.g. 86">
+        </label>
+        <label>Notes (optional)
+          <input type="text" id="body-notes" placeholder="e.g. morning, post-workout">
+        </label>
+        <button class="primary" id="btn-log-body">Save entry</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Progress history</h2>
+      <div id="body-log-list"></div>
+    </div>
+  </section>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -357,68 +456,72 @@
 // ============================================================
 // Each split is a list of supersets. Each superset is a [A, B] pair —
 // you alternate between A and B with minimal rest between, then rest.
+// Splits use TRUE antagonist pairing: chest/back, shoulders/arms, quads/hams.
 const LIBRARY = {
-  push: [
+  // Upper A — Chest vs Back, true horizontal push/pull antagonist
+  "upper-a": [
     [
       { name: "Flat Barbell Bench Press", muscles: ["chest", "triceps", "shoulders"], defaultSets: 4, defaultReps: 8 },
-      { name: "Lateral Raises", muscles: ["shoulders"], defaultSets: 4, defaultReps: 12 },
+      { name: "Barbell Row", muscles: ["back", "biceps"], defaultSets: 4, defaultReps: 8 },
     ],
     [
       { name: "Incline Barbell Bench Press", muscles: ["chest", "shoulders", "triceps"], defaultSets: 4, defaultReps: 8 },
-      { name: "Tricep Pushdowns", muscles: ["triceps"], defaultSets: 4, defaultReps: 12 },
+      { name: "T-Bar Row", muscles: ["back", "biceps"], defaultSets: 4, defaultReps: 10 },
     ],
     [
       { name: "Incline Dumbbell Press", muscles: ["chest", "shoulders", "triceps"], defaultSets: 3, defaultReps: 10 },
-      { name: "Overhead Dumbbell Press", muscles: ["shoulders", "triceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Single Arm Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
     ],
     [
       { name: "Pec Deck", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
-      { name: "Tricep Extensions", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
+      { name: "Chest-Supported Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
     ],
     [
-      { name: "Shoulder Press", muscles: ["shoulders", "triceps"], defaultSets: 3, defaultReps: 8 },
       { name: "Cable Fly", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
+      { name: "Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
     ],
     [
       { name: "Dumbbell Chest Fly", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
-      { name: "Overhead Cable Fly", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
+      { name: "Single Arm Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
     ],
     [
       { name: "Dips", muscles: ["chest", "triceps"], defaultSets: 3, defaultReps: 8 },
-      { name: "Push-ups", muscles: ["chest", "triceps", "shoulders"], defaultSets: 3, defaultReps: 15 },
+      { name: "Pull-ups", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 6 },
     ],
   ],
-  pull: [
+  // Upper B — Shoulders & Arms: front/rear delt antagonist, then bi/tri antagonist
+  "upper-b": [
     [
-      { name: "Pull-ups", muscles: ["back", "biceps"], defaultSets: 4, defaultReps: 6 },
-      { name: "Hammer Curls", muscles: ["biceps"], defaultSets: 4, defaultReps: 10 },
+      { name: "Shoulder Press", muscles: ["shoulders", "triceps"], defaultSets: 4, defaultReps: 8 },
+      { name: "Face Pulls", muscles: ["rear-delts", "back"], defaultSets: 4, defaultReps: 15 },
     ],
     [
-      { name: "Barbell Row", muscles: ["back", "biceps"], defaultSets: 4, defaultReps: 8 },
-      { name: "Preacher Curls", muscles: ["biceps"], defaultSets: 4, defaultReps: 10 },
+      { name: "Lateral Raises", muscles: ["shoulders"], defaultSets: 4, defaultReps: 12 },
+      { name: "Reverse Pec Deck", muscles: ["rear-delts"], defaultSets: 4, defaultReps: 12 },
     ],
     [
-      { name: "T-Bar Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Overhead Dumbbell Press", muscles: ["shoulders", "triceps"], defaultSets: 3, defaultReps: 10 },
       { name: "Reverse Dumbbell Fly", muscles: ["rear-delts"], defaultSets: 3, defaultReps: 12 },
     ],
     [
-      { name: "Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
-      { name: "Face Pulls", muscles: ["rear-delts", "back"], defaultSets: 3, defaultReps: 15 },
+      { name: "Tricep Pushdowns", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
+      { name: "Preacher Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 10 },
     ],
     [
-      { name: "Single Arm Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Tricep Extensions", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
+      { name: "Hammer Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 10 },
+    ],
+    [
+      { name: "Overhead Cable Fly", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
       { name: "Cable Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 12 },
     ],
     [
-      { name: "Single Arm Kneeling Lat Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
-      { name: "Reverse Pec Deck", muscles: ["rear-delts"], defaultSets: 3, defaultReps: 12 },
-    ],
-    [
-      { name: "Chest-Supported Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Push-ups", muscles: ["chest", "triceps", "shoulders"], defaultSets: 3, defaultReps: 15 },
       { name: "Single Arm Bicep Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 10 },
     ],
   ],
-  legs: [
+  // Lower — Quads vs Hamstrings/Glutes, true antagonist
+  lower: [
     [
       { name: "Squats", muscles: ["quads", "glutes", "hamstrings"], defaultSets: 4, defaultReps: 8 },
       { name: "Romanian Deadlift", muscles: ["hamstrings", "glutes"], defaultSets: 4, defaultReps: 8 },
@@ -428,16 +531,16 @@ const LIBRARY = {
       { name: "Hip Thrust", muscles: ["glutes", "hamstrings"], defaultSets: 4, defaultReps: 10 },
     ],
     [
-      { name: "Deadlifts (Conventional)", muscles: ["back", "hamstrings", "glutes"], defaultSets: 3, defaultReps: 5 },
-      { name: "Nordic Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 6 },
-    ],
-    [
-      { name: "Bulgarian Split Squats", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 10 },
+      { name: "Leg Extensions", muscles: ["quads"], defaultSets: 3, defaultReps: 12 },
       { name: "Leg Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 12 },
     ],
     [
+      { name: "Bulgarian Split Squats", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 10 },
+      { name: "Nordic Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 6 },
+    ],
+    [
       { name: "High Box Step Ups", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 8 },
-      { name: "Leg Extensions", muscles: ["quads"], defaultSets: 3, defaultReps: 12 },
+      { name: "Deadlifts (Conventional)", muscles: ["back", "hamstrings", "glutes"], defaultSets: 3, defaultReps: 5 },
     ],
     [
       { name: "Adductors", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 15 },
@@ -469,11 +572,27 @@ const LIBRARY = {
 };
 
 const SPLIT_MUSCLES = {
-  push: ["chest", "shoulders", "triceps"],
-  pull: ["back", "biceps", "rear-delts"],
-  legs: ["quads", "hamstrings", "glutes", "calves"],
+  "upper-a": ["chest", "back", "biceps", "triceps"],
+  "upper-b": ["shoulders", "rear-delts", "biceps", "triceps"],
+  lower: ["quads", "hamstrings", "glutes", "calves"],
   "full-body": ["chest", "back", "shoulders", "quads", "hamstrings", "glutes", "core"],
 };
+
+const SPLIT_LABELS = {
+  "upper-a": "Upper A — Chest & Back",
+  "upper-b": "Upper B — Shoulders & Arms",
+  lower: "Lower",
+  "full-body": "Full Body",
+};
+
+const SPLIT_SHORT = {
+  "upper-a": "Upper A",
+  "upper-b": "Upper B",
+  lower: "Lower",
+  "full-body": "Full Body",
+};
+
+const ALL_SPLITS = ["upper-a", "upper-b", "lower", "full-body"];
 
 const ALL_MUSCLES = [
   "chest", "back", "shoulders", "biceps", "triceps",
@@ -491,9 +610,14 @@ let currentTab = "today";
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migrate: ensure bodyLogs array exists
+      if (!parsed.bodyLogs) parsed.bodyLogs = [];
+      return parsed;
+    }
   } catch (e) { console.warn("Failed to load state", e); }
-  return { workouts: [] };
+  return { workouts: [], bodyLogs: [] };
 }
 
 function saveState() {
@@ -525,17 +649,19 @@ function muscleLastTrained() {
 
 function recommendSplit() {
   const lastTrained = muscleLastTrained();
-  // Score each split by average days-since for its muscles. Higher = more recovered.
+  // Score each split by the MOST-STALE muscle (min days-since). The most
+  // recently-trained muscle in a split dictates whether that split is ready.
+  // This avoids picking a split where one muscle was hit yesterday just
+  // because other muscles in the split are very stale.
   const scores = {};
   for (const [split, muscles] of Object.entries(SPLIT_MUSCLES)) {
-    const days = muscles.map(m => Math.min(lastTrained[m], 14)); // cap at 14
-    const avg = days.reduce((a, b) => a + b, 0) / days.length;
-    // Penalize if any muscle in this split was hit < 1.5 days ago
-    const tooRecent = muscles.some(m => lastTrained[m] < 1.5);
-    scores[split] = tooRecent ? avg - 5 : avg;
+    const days = muscles.map(m => Math.min(lastTrained[m], 14));
+    const minDays = Math.min(...days);
+    // Hard penalty if the most-stale muscle was hit < 1.5 days ago
+    const tooRecent = minDays < 1.5;
+    scores[split] = tooRecent ? minDays - 5 : minDays;
   }
-  // Pick highest score
-  let best = "push", bestScore = -Infinity;
+  let best = "upper-a", bestScore = -Infinity;
   for (const [s, v] of Object.entries(scores)) {
     if (v > bestScore) { bestScore = v; best = s; }
   }
@@ -559,6 +685,74 @@ function render() {
   renderExerciseCard();
   renderHistory();
   renderRecovery();
+  renderProgress();
+}
+
+function renderProgress() {
+  const list = document.getElementById("body-log-list");
+  if (!list) return;
+  if (!state.bodyLogs || state.bodyLogs.length === 0) {
+    list.innerHTML = `<div class="empty">No measurements logged yet.</div>`;
+    return;
+  }
+  // Sort newest first
+  const sorted = [...state.bodyLogs].sort((a, b) => new Date(b.date) - new Date(a.date));
+  list.innerHTML = sorted.map(entry => {
+    const date = new Date(entry.date);
+    const dateStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    const bits = [];
+    if (entry.weight != null) bits.push(`<strong>${entry.weight} kg</strong>`);
+    if (entry.bodyFat != null) bits.push(`${entry.bodyFat}% BF`);
+    if (entry.waist != null) bits.push(`waist ${entry.waist}cm`);
+    return `
+      <div class="body-log-row">
+        <div>
+          <div>${bits.join(" · ") || "(no values)"}</div>
+          ${entry.notes ? `<div class="meta">${entry.notes}</div>` : ""}
+        </div>
+        <div class="meta">
+          ${dateStr}
+          <button class="icon-btn danger" data-delete-body="${entry.id}" title="Delete">×</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  document.querySelectorAll("[data-delete-body]").forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.deleteBody;
+      if (!confirm("Delete this entry?")) return;
+      state.bodyLogs = state.bodyLogs.filter(e => e.id !== id);
+      saveState();
+      renderProgress();
+    };
+  });
+}
+
+function logBodyEntry() {
+  const weight = parseFloat(document.getElementById("body-weight").value);
+  const bodyFat = parseFloat(document.getElementById("body-fat").value);
+  const waist = parseFloat(document.getElementById("body-waist").value);
+  const notes = document.getElementById("body-notes").value.trim();
+  if (isNaN(weight) && isNaN(bodyFat) && isNaN(waist)) {
+    toast("Enter at least one value before saving.");
+    return;
+  }
+  const entry = {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    date: new Date().toISOString(),
+    weight: isNaN(weight) ? null : weight,
+    bodyFat: isNaN(bodyFat) ? null : bodyFat,
+    waist: isNaN(waist) ? null : waist,
+    notes,
+  };
+  state.bodyLogs.push(entry);
+  saveState();
+  document.getElementById("body-weight").value = "";
+  document.getElementById("body-fat").value = "";
+  document.getElementById("body-waist").value = "";
+  document.getElementById("body-notes").value = "";
+  renderProgress();
+  toast("Measurement logged.");
 }
 
 function renderRecommendation() {
@@ -570,22 +764,21 @@ function renderRecommendation() {
   }).join(", ");
   const reason = state.workouts.length === 0
     ? "No history yet — pick any split to start."
-    : `Most recovered group. Last trained: ${muscleSummary}.`;
+    : `Most-stale muscle in this split is ready. Last trained: ${muscleSummary}.`;
   document.getElementById("recommend-card").innerHTML = `
     <div style="color: var(--text-dim); font-size: 13px;">Suggested for today</div>
-    <div class="split-name">${split.replace("-", " ")}</div>
+    <div class="split-name">${SPLIT_LABELS[split]}</div>
     <div class="reason">${reason}</div>
-    <button class="primary" id="btn-start-recommended">Start ${split.replace("-", " ")} workout</button>
+    <button class="primary" id="btn-start-recommended">Start ${SPLIT_SHORT[split]} workout</button>
   `;
   document.getElementById("btn-start-recommended").onclick = () => startWorkout(split);
 }
 
 function renderSplitPicker() {
   const { split: recommended } = recommendSplit();
-  const splits = ["push", "pull", "legs", "full-body"];
-  document.getElementById("split-picker").innerHTML = splits.map(s => `
+  document.getElementById("split-picker").innerHTML = ALL_SPLITS.map(s => `
     <button class="split-btn ${s === recommended ? "recommended" : ""}" data-split="${s}">
-      ${s.replace("-", " ")}
+      ${SPLIT_SHORT[s]}
     </button>
   `).join("");
   document.querySelectorAll(".split-btn").forEach(btn => {
@@ -603,15 +796,73 @@ function startWorkout(split) {
         muscles: ex.muscles,
         defaultSets: ex.defaultSets,
         defaultReps: ex.defaultReps,
-        sets: [],
-        included: false,
-        pairKey: String.fromCharCode(65 + pairIdx), // A, B, C…
-        pairPos: posIdx, // 0 or 1
+        // Prefill all sets — user can edit reps/weight then tap Done
+        sets: Array.from({ length: ex.defaultSets }, () => ({
+          reps: ex.defaultReps,
+          weight: null,
+          completed: false,
+        })),
+        included: true,
+        pairKey: String.fromCharCode(65 + pairIdx),
+        pairPos: posIdx,
       }))
     ),
   };
+  // Reset progression state to the very first set of Superset A
+  currentWorkoutState = { pairIdx: 0, posInPair: 0, setIdx: 0, finished: false };
+  stopRestTimer();
   renderExerciseCard();
   document.getElementById("exercise-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// Tracks which set the user is currently on (the "live" set with a Done button)
+let currentWorkoutState = { pairIdx: 0, posInPair: 0, setIdx: 0, finished: true };
+
+function exerciseAt(pairIdx, posInPair) {
+  // exercises are flat A1,A2,B1,B2,... → linear index
+  return workInProgress.exercises[pairIdx * 2 + posInPair];
+}
+
+function isCurrentSet(pairKey, pairPos, setIdx) {
+  const s = currentWorkoutState;
+  if (s.finished) return false;
+  const curPairKey = String.fromCharCode(65 + s.pairIdx);
+  return curPairKey === pairKey && s.posInPair === pairPos && s.setIdx === setIdx;
+}
+
+function advanceWorkoutState() {
+  const s = currentWorkoutState;
+  const partner = exerciseAt(s.pairIdx, 1 - s.posInPair);
+  const totalPairs = workInProgress.exercises.length / 2;
+
+  if (s.posInPair === 0) {
+    // Just finished A → move to B (same set number, partner might have fewer sets)
+    const targetSet = Math.min(s.setIdx, partner.sets.length - 1);
+    currentWorkoutState = { pairIdx: s.pairIdx, posInPair: 1, setIdx: targetSet, finished: false };
+    startRestTimer(20, "to-b");
+    return;
+  }
+  // Just finished B → either next round in same superset, or next superset
+  const nextSetIdx = s.setIdx + 1;
+  const aSets = exerciseAt(s.pairIdx, 0).sets.length;
+  const bSets = exerciseAt(s.pairIdx, 1).sets.length;
+  if (nextSetIdx < Math.max(aSets, bSets)) {
+    const targetA = Math.min(nextSetIdx, aSets - 1);
+    currentWorkoutState = { pairIdx: s.pairIdx, posInPair: 0, setIdx: targetA, finished: false };
+    startRestTimer(45, "next-round");
+    return;
+  }
+  // Superset complete → next superset
+  const nextPair = s.pairIdx + 1;
+  if (nextPair < totalPairs) {
+    currentWorkoutState = { pairIdx: nextPair, posInPair: 0, setIdx: 0, finished: false };
+    startRestTimer(45, "next-superset");
+    return;
+  }
+  // All supersets done
+  currentWorkoutState = { pairIdx: 0, posInPair: 0, setIdx: 0, finished: true };
+  stopRestTimer();
+  toast("🎉 All supersets done — hit Save workout.");
 }
 
 function renderExerciseCard() {
@@ -621,8 +872,13 @@ function renderExerciseCard() {
     return;
   }
   card.classList.remove("hidden");
+  const totalPairs = workInProgress.exercises.length / 2;
+  const cur = currentWorkoutState;
+  const progressLabel = cur.finished
+    ? "all supersets done — Save workout"
+    : `superset ${cur.pairIdx + 1}/${totalPairs}, set ${cur.setIdx + 1}`;
   document.getElementById("exercise-card-title").textContent =
-    `${workInProgress.split.replace("-", " ")} — alternate between A & B`;
+    `${SPLIT_LABELS[workInProgress.split]} — ${progressLabel}`;
 
   // Group exercises by pairKey
   const groups = {};
@@ -631,12 +887,15 @@ function renderExerciseCard() {
   });
 
   const list = document.getElementById("exercise-list");
-  list.innerHTML = Object.entries(groups).map(([pairKey, entries]) => {
+  list.innerHTML = Object.entries(groups).map(([pairKey, entries], groupIdx) => {
     const muscleSummary = [...new Set(entries.flatMap(e => e.ex.muscles))].join(" · ");
+    const isCurrentPair = !cur.finished && groupIdx === cur.pairIdx;
+    const isPastPair = !cur.finished && groupIdx < cur.pairIdx;
+    const cls = isCurrentPair ? "current" : (isPastPair ? "" : (cur.finished ? "" : "inactive"));
     return `
-      <li class="superset">
+      <li class="superset ${cls}">
         <div class="superset-header">
-          <span class="superset-label">Superset ${pairKey}</span>
+          <span class="superset-label">Superset ${pairKey}${isCurrentPair ? " ▸" : ""}</span>
           <span class="superset-muscles">${muscleSummary}</span>
         </div>
         ${entries.map(({ ex, idx }) => `
@@ -649,13 +908,11 @@ function renderExerciseCard() {
                 </div>
                 <div class="exercise-muscles">${ex.muscles.join(" · ")}</div>
               </div>
-              <button class="icon-btn" data-toggle="${idx}">${ex.included ? "▾" : "+"}</button>
             </div>
-            <div class="sets-list ${ex.included ? "open" : ""}" id="sets-${idx}">
+            <div class="sets-list open" id="sets-${idx}">
               ${renderSets(ex, idx)}
               <div class="set-controls">
                 <button data-add-set="${idx}">+ Add set</button>
-                <button class="ghost" data-prefill="${idx}">Prefill ${ex.defaultSets}×${ex.defaultReps}</button>
               </div>
             </div>
           </div>
@@ -670,44 +927,38 @@ function renderSets(ex, exIdx) {
   if (ex.sets.length === 0) {
     return `<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;">No sets yet.</div>`;
   }
-  return ex.sets.map((s, sIdx) => `
-    <div class="set-row">
-      <label>${sIdx + 1}</label>
-      <input type="number" placeholder="reps" value="${s.reps ?? ""}" data-field="reps" data-ex="${exIdx}" data-set="${sIdx}">
-      <input type="number" placeholder="weight" value="${s.weight ?? ""}" data-field="weight" data-ex="${exIdx}" data-set="${sIdx}" step="0.5">
-      <button class="icon-btn" data-remove-set="${exIdx}:${sIdx}" title="Remove set">×</button>
-    </div>
-  `).join("");
+  return ex.sets.map((s, sIdx) => {
+    const cur = isCurrentSet(ex.pairKey, ex.pairPos, sIdx);
+    const done = s.completed === true;
+    const rowCls = cur ? "current" : (done ? "done" : "");
+    const disabled = done ? "disabled" : "";
+    const lastCell = done
+      ? `<span class="set-status">✓</span>`
+      : cur
+        ? `<button class="btn-done" data-done="${exIdx}:${sIdx}">✓ Done</button>`
+        : `<button class="icon-btn" data-remove-set="${exIdx}:${sIdx}" title="Remove set">×</button>`;
+    return `
+      <div class="set-row ${rowCls}">
+        <label>${sIdx + 1}</label>
+        <input type="number" min="0" step="1" placeholder="reps" value="${s.reps ?? ""}" data-field="reps" data-ex="${exIdx}" data-set="${sIdx}" ${disabled}>
+        <input type="number" min="0" step="0.5" placeholder="weight" value="${s.weight ?? ""}" data-field="weight" data-ex="${exIdx}" data-set="${sIdx}" ${disabled}>
+        ${lastCell}
+      </div>
+    `;
+  }).join("");
 }
 
 function attachExerciseHandlers() {
-  document.querySelectorAll("[data-toggle]").forEach(btn => {
-    btn.onclick = () => {
-      const idx = +btn.dataset.toggle;
-      const ex = workInProgress.exercises[idx];
-      ex.included = !ex.included;
-      if (ex.included && ex.sets.length === 0) {
-        ex.sets.push({ reps: null, weight: null });
-      }
-      renderExerciseCard();
-    };
-  });
   document.querySelectorAll("[data-add-set]").forEach(btn => {
     btn.onclick = () => {
       const idx = +btn.dataset.addSet;
       const ex = workInProgress.exercises[idx];
-      ex.included = true;
       const last = ex.sets[ex.sets.length - 1];
-      ex.sets.push({ reps: last?.reps ?? null, weight: last?.weight ?? null });
-      renderExerciseCard();
-    };
-  });
-  document.querySelectorAll("[data-prefill]").forEach(btn => {
-    btn.onclick = () => {
-      const idx = +btn.dataset.prefill;
-      const ex = workInProgress.exercises[idx];
-      ex.included = true;
-      ex.sets = Array.from({ length: ex.defaultSets }, () => ({ reps: ex.defaultReps, weight: null }));
+      ex.sets.push({
+        reps: last?.reps ?? ex.defaultReps,
+        weight: last?.weight ?? null,
+        completed: false,
+      });
       renderExerciseCard();
     };
   });
@@ -715,9 +966,6 @@ function attachExerciseHandlers() {
     btn.onclick = () => {
       const [exIdx, sIdx] = btn.dataset.removeSet.split(":").map(Number);
       workInProgress.exercises[exIdx].sets.splice(sIdx, 1);
-      if (workInProgress.exercises[exIdx].sets.length === 0) {
-        workInProgress.exercises[exIdx].included = false;
-      }
       renderExerciseCard();
     };
   });
@@ -726,24 +974,39 @@ function attachExerciseHandlers() {
       const exIdx = +input.dataset.ex;
       const sIdx = +input.dataset.set;
       const field = input.dataset.field;
-      const val = input.value === "" ? null : parseFloat(input.value);
+      const val = input.value === "" ? null : Math.max(0, parseFloat(input.value));
       workInProgress.exercises[exIdx].sets[sIdx][field] = val;
+    };
+  });
+  document.querySelectorAll("[data-done]").forEach(btn => {
+    btn.onclick = () => {
+      const [exIdx, sIdx] = btn.dataset.done.split(":").map(Number);
+      workInProgress.exercises[exIdx].sets[sIdx].completed = true;
+      advanceWorkoutState();
+      renderExerciseCard();
     };
   });
 }
 
 function saveWorkout() {
   if (!workInProgress) return;
-  const included = workInProgress.exercises.filter(ex => ex.included && ex.sets.length > 0);
-  if (included.length === 0) {
-    toast("Add at least one exercise with sets before saving.");
+  // Keep only exercises with at least one completed set — incomplete supersets
+  // don't count toward recovery tracking.
+  const completed = workInProgress.exercises
+    .map(ex => ({
+      ...ex,
+      sets: ex.sets.filter(s => s.completed),
+    }))
+    .filter(ex => ex.sets.length > 0);
+  if (completed.length === 0) {
+    toast("Mark at least one set as Done before saving.");
     return;
   }
   const workout = {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     date: new Date().toISOString(),
     split: workInProgress.split,
-    exercises: included.map(ex => ({
+    exercises: completed.map(ex => ({
       name: ex.name,
       muscles: ex.muscles,
       sets: ex.sets.map(s => ({ reps: s.reps, weight: s.weight })),
@@ -752,6 +1015,7 @@ function saveWorkout() {
   state.workouts.unshift(workout);
   saveState();
   workInProgress = null;
+  stopRestTimer();
   render();
   toast("Workout saved.");
   switchTab("today");
@@ -767,11 +1031,12 @@ function renderHistory() {
     const totalSets = w.exercises.reduce((sum, ex) => sum + ex.sets.length, 0);
     const date = new Date(w.date);
     const dateStr = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const splitLabel = SPLIT_SHORT[w.split] || w.split.replace("-", " ");
     return `
       <div class="history-item" data-id="${w.id}">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div>
-            <div class="history-date">${dateStr} <span class="badge">${w.split.replace("-", " ")}</span></div>
+            <div class="history-date">${dateStr} <span class="badge">${splitLabel}</span></div>
             <div class="history-meta">${w.exercises.length} exercises · ${totalSets} sets</div>
           </div>
           <button class="icon-btn danger" data-delete="${w.id}" title="Delete">×</button>
@@ -818,6 +1083,47 @@ function renderRecovery() {
 }
 
 // ============================================================
+// Rest timer
+// ============================================================
+let restTimerHandle = null;
+let restTimerEndsAt = 0;
+
+function stopRestTimer() {
+  if (restTimerHandle) {
+    clearInterval(restTimerHandle);
+    restTimerHandle = null;
+  }
+  const box = document.getElementById("rest-timer");
+  if (box) box.classList.add("hidden");
+}
+
+function startRestTimer(seconds, phase) {
+  stopRestTimer();
+  restTimerEndsAt = Date.now() + seconds * 1000;
+  const box = document.getElementById("rest-timer");
+  const display = document.getElementById("timer-display");
+  const phaseEl = document.getElementById("timer-phase");
+  box.classList.remove("hidden");
+  const phaseText = {
+    "to-b": `Rest ${seconds}s — switch to exercise B`,
+    "next-round": `Rest ${seconds}s — next round (back to A)`,
+    "next-superset": `Rest ${seconds}s — next superset starts`,
+  }[phase] || `Rest ${seconds}s`;
+  phaseEl.textContent = phaseText;
+  const tick = () => {
+    const remaining = Math.max(0, Math.ceil((restTimerEndsAt - Date.now()) / 1000));
+    display.textContent = `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
+    if (remaining <= 0) {
+      stopRestTimer();
+      try { new Audio("data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=").play().catch(() => {}); } catch (e) {}
+      toast("Time to go!");
+    }
+  };
+  tick();
+  restTimerHandle = setInterval(tick, 250);
+}
+
+// ============================================================
 // Tabs, import/export, toast
 // ============================================================
 function switchTab(name) {
@@ -825,7 +1131,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t => {
     t.classList.toggle("active", t.dataset.tab === name);
   });
-  ["today", "history", "recovery"].forEach(t => {
+  ["today", "history", "recovery", "progress"].forEach(t => {
     document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== name);
   });
 }
@@ -883,9 +1189,12 @@ document.getElementById("btn-cancel").onclick = () => {
   if (!workInProgress) return;
   if (confirm("Discard this workout?")) {
     workInProgress = null;
+    stopRestTimer();
     renderExerciseCard();
   }
 };
+document.getElementById("btn-skip-timer").onclick = stopRestTimer;
+document.getElementById("btn-log-body").onclick = logBodyEntry;
 
 render();
 </script>
