@@ -382,6 +382,35 @@
   .trend-chart-svg .data-point { fill: var(--accent); }
   .trend-chart-svg .pr-point { fill: #ffd700; stroke: var(--bg); stroke-width: 2; }
   .pr-row { background: rgba(255, 215, 0, 0.06); }
+  .sync-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .sync-pill.ok { color: var(--good); border-color: var(--good); }
+  .sync-pill.error { color: var(--bad); border-color: var(--bad); }
+  .sync-pill.syncing { color: var(--accent); border-color: var(--accent); }
+  #sync-card-body code {
+    background: var(--surface-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  #sync-card-body input[type="password"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 14px;
+    width: 100%;
+    font-family: inherit;
+  }
   .pr-badge {
     color: #ffd700 !important;
     font-weight: 600;
@@ -417,6 +446,7 @@
   <header>
     <h1>Workout Coach</h1>
     <div class="toolbar">
+      <span class="sync-pill hidden" id="sync-status-pill" title="Cloud sync status"></span>
       <button class="ghost" id="btn-units" title="Toggle weight unit">kg</button>
       <button class="ghost" id="btn-export" title="Download history JSON">Export</button>
       <button class="ghost" id="btn-import" title="Load history JSON">Import</button>
@@ -474,6 +504,10 @@
   </section>
 
   <section id="tab-progress" class="hidden">
+    <div class="card" id="sync-card">
+      <h2>Cloud sync (GitHub)</h2>
+      <div id="sync-card-body"></div>
+    </div>
     <div class="card">
       <h2>Log a body measurement</h2>
       <div class="body-log-form">
@@ -683,12 +717,22 @@ function loadState() {
       const parsed = JSON.parse(raw);
       // Migrate: ensure new fields exist on old saves
       if (!parsed.bodyLogs) parsed.bodyLogs = [];
+      if (!parsed.deletedIds) parsed.deletedIds = [];
       if (!parsed.settings) parsed.settings = { units: "kg" };
       if (!parsed.settings.units) parsed.settings.units = "kg";
+      if (!parsed.settings.sync) parsed.settings.sync = { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null };
       return parsed;
     }
   } catch (e) { console.warn("Failed to load state", e); }
-  return { workouts: [], bodyLogs: [], settings: { units: "kg" } };
+  return {
+    workouts: [],
+    bodyLogs: [],
+    deletedIds: [],
+    settings: {
+      units: "kg",
+      sync: { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null },
+    },
+  };
 }
 
 // ============================================================
@@ -782,6 +826,8 @@ function render() {
   renderRecovery();
   renderProgress();
   renderTrends();
+  renderSyncCard();
+  updateSyncStatus();
 }
 
 // ============================================================
@@ -997,6 +1043,116 @@ function renderTrendTable(history) {
   `;
 }
 
+function renderSyncCard() {
+  const body = document.getElementById("sync-card-body");
+  if (!body) return;
+  const cfg = syncConfig();
+  if (!cfg.enabled) {
+    body.innerHTML = `
+      <p style="color: var(--text-dim); font-size: 13px; margin-top: 0;">
+        Stores your workouts in a private GitHub repo so they survive across devices, browser clears, and time.
+      </p>
+      <ol style="font-size: 13px; color: var(--text-dim); padding-left: 18px; line-height: 1.6;">
+        <li>Create a new <strong>private repo</strong> on GitHub (e.g. <code>workout-data</code>) — leave it empty.</li>
+        <li>Go to <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color: var(--accent);">github.com/settings/personal-access-tokens/new</a></li>
+        <li>Token type: <strong>Fine-grained</strong>. Repository access: only the repo from step 1.</li>
+        <li>Permissions → Repository → <strong>Contents: Read and write</strong>.</li>
+        <li>Copy the token (starts with <code>github_pat_</code>) and paste it below.</li>
+      </ol>
+      <div class="body-log-form" style="margin-top: 12px;">
+        <label>GitHub Personal Access Token
+          <input type="password" id="sync-pat" placeholder="github_pat_…">
+        </label>
+        <label>Repo (owner/repo-name)
+          <input type="text" id="sync-repo" placeholder="josephjoshuangushual-create/workout-data">
+        </label>
+        <button class="primary" id="btn-sync-connect">Connect & sync</button>
+      </div>
+    `;
+    document.getElementById("btn-sync-connect").onclick = setupSync;
+    return;
+  }
+  const lastStr = cfg.lastSyncedAt
+    ? new Date(cfg.lastSyncedAt).toLocaleString()
+    : "never";
+  body.innerHTML = `
+    <div style="font-size: 13px;">
+      <div><strong>Repo:</strong> <code>${cfg.repo}</code></div>
+      <div><strong>File:</strong> <code>${cfg.path}</code></div>
+      <div><strong>Last synced:</strong> ${lastStr}</div>
+      ${cfg.lastError ? `<div style="color: var(--bad); margin-top: 6px;">⚠ ${cfg.lastError}</div>` : ""}
+    </div>
+    <div style="display: flex; gap: 8px; margin-top: 14px;">
+      <button class="primary" id="btn-sync-now">Sync now</button>
+      <button class="ghost" id="btn-sync-pull">Pull from remote</button>
+      <button class="ghost danger" id="btn-sync-disconnect">Disconnect</button>
+    </div>
+  `;
+  document.getElementById("btn-sync-now").onclick = async () => {
+    updateSyncStatus("syncing");
+    const result = await syncPush();
+    updateSyncStatus(result.ok ? "synced" : "error");
+    toast(result.ok ? "Synced to GitHub." : "Sync failed: " + result.reason);
+    renderSyncCard();
+  };
+  document.getElementById("btn-sync-pull").onclick = async () => {
+    if (!confirm("Pull from remote — this will merge remote workouts into local. Continue?")) return;
+    updateSyncStatus("syncing");
+    const result = await syncPull();
+    updateSyncStatus(result.ok ? "synced" : "error");
+    toast(result.ok ? "Pulled from GitHub." : "Pull failed: " + result.reason);
+    render();
+  };
+  document.getElementById("btn-sync-disconnect").onclick = () => {
+    if (!confirm("Disconnect sync? Your PAT will be removed from this browser. Remote data stays untouched.")) return;
+    state.settings.sync = { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null };
+    saveState();
+    updateSyncStatus();
+    renderSyncCard();
+    toast("Sync disconnected.");
+  };
+}
+
+async function setupSync() {
+  const pat = document.getElementById("sync-pat").value.trim();
+  const repo = document.getElementById("sync-repo").value.trim();
+  if (!pat || !repo) {
+    toast("Enter both a token and a repo.");
+    return;
+  }
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    toast("Repo must be in 'owner/repo-name' format.");
+    return;
+  }
+  // Temporarily configure to test
+  state.settings.sync = {
+    enabled: true, pat, repo, path: "workouts.json",
+    fileSha: null, lastSyncedAt: null, lastError: null,
+  };
+  saveState();
+  updateSyncStatus("syncing");
+  // Try pulling first — if file exists, merge it in
+  const pull = await syncPull();
+  if (!pull.ok) {
+    state.settings.sync.enabled = false;
+    saveState();
+    updateSyncStatus();
+    renderSyncCard();
+    toast("Connection failed: " + pull.reason);
+    return;
+  }
+  // Then push current (possibly-merged) state
+  const push = await syncPush();
+  if (!push.ok) {
+    toast("Push failed: " + push.reason);
+  } else {
+    toast("Sync set up. Workouts will auto-sync from now on.");
+  }
+  updateSyncStatus(push.ok ? "synced" : "error");
+  renderSyncCard();
+  render();
+}
+
 function renderProgress() {
   const list = document.getElementById("body-log-list");
   if (!list) return;
@@ -1031,7 +1187,9 @@ function renderProgress() {
       const id = btn.dataset.deleteBody;
       if (!confirm("Delete this entry?")) return;
       state.bodyLogs = state.bodyLogs.filter(e => e.id !== id);
+      if (!state.deletedIds.includes(id)) state.deletedIds.push(id);
       saveState();
+      schedulePush();
       renderProgress();
     };
   });
@@ -1056,6 +1214,7 @@ function logBodyEntry() {
   };
   state.bodyLogs.push(entry);
   saveState();
+  schedulePush();
   document.getElementById("body-weight").value = "";
   document.getElementById("body-fat").value = "";
   document.getElementById("body-waist").value = "";
@@ -1371,6 +1530,7 @@ function saveWorkout() {
   };
   state.workouts.unshift(workout);
   saveState();
+  schedulePush();
   workInProgress = null;
   stopRestTimer();
   render();
@@ -1420,7 +1580,9 @@ function renderHistory() {
       const id = btn.dataset.delete;
       if (!confirm("Delete this workout?")) return;
       state.workouts = state.workouts.filter(w => w.id !== id);
+      if (!state.deletedIds.includes(id)) state.deletedIds.push(id);
       saveState();
+      schedulePush();
       render();
     };
   });
@@ -1437,6 +1599,195 @@ function renderRecovery() {
       </div>
     `;
   }).join("");
+}
+
+// ============================================================
+// GitHub sync — stores workouts.json in a private repo for cross-device durability
+// ============================================================
+function syncConfig() { return state.settings.sync; }
+function syncEnabled() { return syncConfig().enabled && syncConfig().pat && syncConfig().repo; }
+
+async function githubApi(method, path, body) {
+  const cfg = syncConfig();
+  const res = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      "Authorization": `Bearer ${cfg.pat}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// b64 encode/decode that handles UTF-8 safely
+function b64encode(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+function b64decode(str) {
+  return decodeURIComponent(escape(atob(str.replace(/\n/g, ""))));
+}
+
+async function syncPull() {
+  if (!syncEnabled()) return { ok: false, reason: "Sync not configured" };
+  const cfg = syncConfig();
+  try {
+    const data = await githubApi("GET", `/repos/${cfg.repo}/contents/${cfg.path}`);
+    const remoteJson = b64decode(data.content);
+    const remote = JSON.parse(remoteJson);
+    cfg.fileSha = data.sha;
+    mergeRemoteIntoLocal(remote);
+    cfg.lastSyncedAt = new Date().toISOString();
+    cfg.lastError = null;
+    saveState();
+    return { ok: true };
+  } catch (e) {
+    // 404 = file doesn't exist yet — that's fine, treat as empty remote
+    if (e.message.includes("404")) {
+      cfg.fileSha = null;
+      cfg.lastSyncedAt = new Date().toISOString();
+      cfg.lastError = null;
+      saveState();
+      return { ok: true, empty: true };
+    }
+    cfg.lastError = e.message;
+    saveState();
+    return { ok: false, reason: e.message };
+  }
+}
+
+async function syncPush() {
+  if (!syncEnabled()) return { ok: false, reason: "Sync not configured" };
+  const cfg = syncConfig();
+  try {
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workouts: state.workouts,
+      bodyLogs: state.bodyLogs,
+      deletedIds: state.deletedIds,
+    };
+    const body = {
+      message: `Workout coach sync ${new Date().toISOString()}`,
+      content: b64encode(JSON.stringify(payload, null, 2)),
+    };
+    if (cfg.fileSha) body.sha = cfg.fileSha;
+    const data = await githubApi("PUT", `/repos/${cfg.repo}/contents/${cfg.path}`, body);
+    cfg.fileSha = data.content.sha;
+    cfg.lastSyncedAt = new Date().toISOString();
+    cfg.lastError = null;
+    saveState();
+    return { ok: true };
+  } catch (e) {
+    // 409 / sha mismatch: someone else pushed first. Pull and retry once.
+    if (e.message.includes("409") || e.message.includes("sha")) {
+      const pull = await syncPull();
+      if (!pull.ok) {
+        cfg.lastError = "Push failed and pull-retry failed: " + (pull.reason || "");
+        saveState();
+        return { ok: false, reason: cfg.lastError };
+      }
+      // Retry push with fresh sha
+      try {
+        const payload = {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          workouts: state.workouts,
+          bodyLogs: state.bodyLogs,
+          deletedIds: state.deletedIds,
+        };
+        const body2 = {
+          message: `Workout coach sync ${new Date().toISOString()} (retry)`,
+          content: b64encode(JSON.stringify(payload, null, 2)),
+          sha: cfg.fileSha,
+        };
+        const data2 = await githubApi("PUT", `/repos/${cfg.repo}/contents/${cfg.path}`, body2);
+        cfg.fileSha = data2.content.sha;
+        cfg.lastSyncedAt = new Date().toISOString();
+        cfg.lastError = null;
+        saveState();
+        return { ok: true };
+      } catch (e2) {
+        cfg.lastError = e2.message;
+        saveState();
+        return { ok: false, reason: e2.message };
+      }
+    }
+    cfg.lastError = e.message;
+    saveState();
+    return { ok: false, reason: e.message };
+  }
+}
+
+// Merge remote workouts/bodyLogs into local. Union by id; tombstones (deletedIds)
+// on either side win. Last-write-wins on conflicts (by ISO date string).
+function mergeRemoteIntoLocal(remote) {
+  const tombstones = new Set([...(state.deletedIds || []), ...(remote.deletedIds || [])]);
+  state.deletedIds = [...tombstones];
+  const byId = new Map();
+  for (const w of (remote.workouts || [])) byId.set(w.id, w);
+  for (const w of state.workouts) {
+    const existing = byId.get(w.id);
+    if (!existing || new Date(w.date) > new Date(existing.date)) byId.set(w.id, w);
+  }
+  state.workouts = [...byId.values()]
+    .filter(w => !tombstones.has(w.id))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  const bodyById = new Map();
+  for (const b of (remote.bodyLogs || [])) bodyById.set(b.id, b);
+  for (const b of state.bodyLogs) {
+    const existing = bodyById.get(b.id);
+    if (!existing || new Date(b.date) > new Date(existing.date)) bodyById.set(b.id, b);
+  }
+  state.bodyLogs = [...bodyById.values()].filter(b => !tombstones.has(b.id));
+}
+
+// Fire-and-forget push after save. Updates status indicator.
+let pushPending = false;
+function schedulePush() {
+  if (!syncEnabled() || pushPending) return;
+  pushPending = true;
+  updateSyncStatus("syncing");
+  syncPush().then(result => {
+    pushPending = false;
+    updateSyncStatus(result.ok ? "synced" : "error");
+    if (!result.ok) toast("Sync failed: " + result.reason);
+    renderSyncCard();
+  });
+}
+
+function updateSyncStatus(state) {
+  const el = document.getElementById("sync-status-pill");
+  if (!el) return;
+  if (!syncEnabled()) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  const cfg = syncConfig();
+  if (state === "syncing") {
+    el.textContent = "↻ syncing";
+    el.className = "sync-pill syncing";
+    return;
+  }
+  if (state === "error" || cfg.lastError) {
+    el.textContent = "⚠ sync error";
+    el.className = "sync-pill error";
+    return;
+  }
+  if (cfg.lastSyncedAt) {
+    const mins = Math.round((Date.now() - new Date(cfg.lastSyncedAt).getTime()) / 60000);
+    el.textContent = mins < 1 ? "✓ synced" : mins < 60 ? `✓ ${mins}m ago` : `✓ ${Math.round(mins / 60)}h ago`;
+    el.className = "sync-pill ok";
+    return;
+  }
+  el.textContent = "↻ not synced";
+  el.className = "sync-pill";
 }
 
 // ============================================================
@@ -1574,6 +1925,16 @@ document.getElementById("btn-units").onclick = () => {
 updateUnitsButton();
 
 render();
+
+// Auto-pull on app load (background; doesn't block UI)
+if (syncEnabled()) {
+  updateSyncStatus("syncing");
+  syncPull().then(result => {
+    updateSyncStatus(result.ok ? "synced" : "error");
+    if (result.ok) render();
+    else if (result.reason) console.warn("Auto-pull failed:", result.reason);
+  });
+}
 </script>
 </body>
 </html>
