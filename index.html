@@ -1864,6 +1864,7 @@ document.getElementById("btn-units").onclick = () => {
 // ============================================================
 document.getElementById("btn-signout").onclick = doSignOut;
 document.getElementById("btn-auth-send").onclick = async () => {
+  const btn = document.getElementById("btn-auth-send");
   const email = document.getElementById("auth-email").value.trim();
   const status = document.getElementById("auth-status");
   status.className = "auth-status";
@@ -1872,14 +1873,44 @@ document.getElementById("btn-auth-send").onclick = async () => {
     status.classList.add("error");
     return;
   }
+  if (btn.disabled) return;
+  btn.disabled = true;
   status.textContent = "Sending…";
   try {
     await signInWithEmail(email);
-    status.textContent = "Magic link sent. Check your inbox and click the link to sign in.";
+    status.textContent = "Magic link sent. Check your inbox (and spam) and click the link to sign in.";
     status.classList.add("ok");
+    // Throttle re-sends to avoid tripping the provider rate limit.
+    let remaining = 60;
+    btn.textContent = `Resend in ${remaining}s`;
+    const tick = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(tick);
+        btn.disabled = false;
+        btn.textContent = "Send magic link";
+      } else {
+        btn.textContent = `Resend in ${remaining}s`;
+      }
+    }, 1000);
   } catch (e) {
-    status.textContent = "Failed: " + e.message;
+    const raw = (e && e.message) ? e.message : String(e);
+    const msg = raw.toLowerCase();
+    const code = e && (e.status || e.code);
+    let friendly;
+    // Supabase returns 429 with messages like "email rate limit exceeded"
+    // or "For security purposes, you can only request this after N seconds".
+    const waitMatch = raw.match(/after (\d+) seconds?/i);
+    if (waitMatch) {
+      friendly = `Too many requests. Please wait ${waitMatch[1]} seconds and try again.`;
+    } else if (code === 429 || msg.includes("rate limit") || msg.includes("too many") || msg.includes("email rate")) {
+      friendly = "Email send limit reached. Magic-link emails are capped per hour — please wait a bit before requesting another, and check your inbox (and spam) for an earlier link.";
+    } else {
+      friendly = "Failed: " + raw;
+    }
+    status.textContent = friendly;
     status.classList.add("error");
+    btn.disabled = false;
   }
 };
 document.getElementById("auth-email").addEventListener("keypress", e => {
