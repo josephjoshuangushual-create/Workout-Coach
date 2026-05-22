@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Workout Coach</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root {
     --bg: #0d1117;
@@ -382,7 +383,7 @@
   .trend-chart-svg .data-point { fill: var(--accent); }
   .trend-chart-svg .pr-point { fill: #ffd700; stroke: var(--bg); stroke-width: 2; }
   .pr-row { background: rgba(255, 215, 0, 0.06); }
-  .sync-pill {
+  .user-pill {
     display: inline-flex;
     align-items: center;
     padding: 4px 10px;
@@ -391,25 +392,71 @@
     background: var(--surface-2);
     color: var(--text-dim);
     border: 1px solid var(--border);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .sync-pill.ok { color: var(--good); border-color: var(--good); }
-  .sync-pill.error { color: var(--bad); border-color: var(--bad); }
-  .sync-pill.syncing { color: var(--accent); border-color: var(--accent); }
-  #sync-card-body code {
-    background: var(--surface-2);
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 12px;
+  .auth-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 200;
   }
-  #sync-card-body input[type="password"] {
+  .auth-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 380px;
+  }
+  .auth-card h1 {
+    margin: 0 0 6px;
+    font-size: 24px;
+    font-weight: 600;
+  }
+  .auth-subtitle {
+    color: var(--text-dim);
+    margin: 0 0 22px;
+    font-size: 14px;
+  }
+  .auth-form { display: grid; gap: 12px; }
+  .auth-form label {
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    color: var(--text-dim);
+    gap: 6px;
+  }
+  .auth-form input[type="email"] {
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
-    padding: 6px 8px;
-    border-radius: 6px;
-    font-size: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 15px;
     width: 100%;
     font-family: inherit;
+  }
+  .auth-form .primary { padding: 10px 16px; font-size: 15px; }
+  .auth-status {
+    font-size: 13px;
+    min-height: 18px;
+    color: var(--text-dim);
+  }
+  .auth-status.ok { color: var(--good); }
+  .auth-status.error { color: var(--bad); }
+  .auth-footer {
+    margin-top: 20px;
+    margin-bottom: 0;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
   }
   .pr-badge {
     color: #ffd700 !important;
@@ -442,14 +489,31 @@
 </style>
 </head>
 <body>
-<div class="container">
+<!-- Login screen overlay (shown when no Supabase session) -->
+<div id="auth-screen" class="auth-screen hidden">
+  <div class="auth-card">
+    <h1>Workout Coach</h1>
+    <p class="auth-subtitle">Sign in to sync your workouts across devices.</p>
+    <div class="auth-form">
+      <label>Email
+        <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email">
+      </label>
+      <button class="primary" id="btn-auth-send">Send magic link</button>
+      <div class="auth-status" id="auth-status"></div>
+    </div>
+    <p class="auth-footer">Family/friends only — no public signup.</p>
+  </div>
+</div>
+
+<div class="container hidden" id="app-container">
   <header>
     <h1>Workout Coach</h1>
     <div class="toolbar">
-      <span class="sync-pill hidden" id="sync-status-pill" title="Cloud sync status"></span>
+      <span class="user-pill hidden" id="user-pill"></span>
       <button class="ghost" id="btn-units" title="Toggle weight unit">kg</button>
+      <button class="ghost" id="btn-import" title="Import existing JSON history">Import</button>
       <button class="ghost" id="btn-export" title="Download history JSON">Export</button>
-      <button class="ghost" id="btn-import" title="Load history JSON">Import</button>
+      <button class="ghost" id="btn-signout" title="Sign out">Sign out</button>
       <input type="file" id="file-input" accept="application/json" class="hidden">
     </div>
   </header>
@@ -504,10 +568,6 @@
   </section>
 
   <section id="tab-progress" class="hidden">
-    <div class="card" id="sync-card">
-      <h2>Cloud sync (GitHub)</h2>
-      <div id="sync-card-body"></div>
-    </div>
     <div class="card">
       <h2>Log a body measurement</h2>
       <div class="body-log-form">
@@ -703,36 +763,49 @@ const ALL_MUSCLES = [
 ];
 
 // ============================================================
-// State
+// Supabase client + auth
 // ============================================================
-const STORAGE_KEY = "workout-coach-v1";
-let state = loadState();
-let workInProgress = null; // { split, exercises: [{ name, muscles, sets: [{reps, weight}] }] }
+const SUPABASE_URL = "https://dxefqkxxqmoqjniuuptr.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR4ZWZxa3h4cW1vcWpuaXV1cHRyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0NTkyMDYsImV4cCI6MjA5NTAzNTIwNn0.IMR4qW3iRYkl6I5bYPbvyVlizTkxndLHJGnTujgc1v0";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let currentUser = null;
+let workInProgress = null;
 let currentTab = "today";
 
-function loadState() {
+// In-memory state; hydrated from Supabase on sign-in. Same shape as before
+// so the rest of the rendering code doesn't change.
+let state = {
+  workouts: [],
+  bodyLogs: [],
+  settings: { units: "kg" },
+};
+
+// Per-user localStorage cache for instant render before the Supabase fetch finishes.
+const CACHE_KEY_PREFIX = "workout-coach-cache-";
+function cacheKey() { return currentUser ? CACHE_KEY_PREFIX + currentUser.id : null; }
+function loadCache() {
+  const k = cacheKey();
+  if (!k) return false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Migrate: ensure new fields exist on old saves
-      if (!parsed.bodyLogs) parsed.bodyLogs = [];
-      if (!parsed.deletedIds) parsed.deletedIds = [];
-      if (!parsed.settings) parsed.settings = { units: "kg" };
-      if (!parsed.settings.units) parsed.settings.units = "kg";
-      if (!parsed.settings.sync) parsed.settings.sync = { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null };
-      return parsed;
-    }
-  } catch (e) { console.warn("Failed to load state", e); }
-  return {
-    workouts: [],
-    bodyLogs: [],
-    deletedIds: [],
-    settings: {
-      units: "kg",
-      sync: { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null },
-    },
-  };
+    const raw = localStorage.getItem(k);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    state.workouts = parsed.workouts || [];
+    state.bodyLogs = parsed.bodyLogs || [];
+    state.settings = parsed.settings || { units: "kg" };
+    if (!state.settings.units) state.settings.units = "kg";
+    return true;
+  } catch (e) { return false; }
+}
+function saveCache() {
+  const k = cacheKey();
+  if (!k) return;
+  localStorage.setItem(k, JSON.stringify({
+    workouts: state.workouts,
+    bodyLogs: state.bodyLogs,
+    settings: state.settings,
+  }));
 }
 
 // ============================================================
@@ -759,8 +832,127 @@ function epley1RM(weightKg, reps) {
   return weightKg * (1 + reps / 30);
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+// saveState() preserved as an alias so the rest of the code can call it
+// without knowing about Supabase. Writes the in-memory state to the local
+// per-user cache; cloud mutations happen in the specific db* functions.
+function saveState() { saveCache(); }
+
+// ============================================================
+// Auth flow
+// ============================================================
+async function signInWithEmail(email) {
+  const { error } = await sb.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: location.origin + location.pathname },
+  });
+  if (error) throw error;
+}
+
+async function doSignOut() {
+  if (currentUser) localStorage.removeItem(CACHE_KEY_PREFIX + currentUser.id);
+  await sb.auth.signOut();
+  currentUser = null;
+  state = { workouts: [], bodyLogs: [], settings: { units: "kg" } };
+  workInProgress = null;
+  showAuthScreen();
+}
+
+function showAuthScreen() {
+  document.getElementById("auth-screen").classList.remove("hidden");
+  document.getElementById("app-container").classList.add("hidden");
+}
+function showApp() {
+  document.getElementById("auth-screen").classList.add("hidden");
+  document.getElementById("app-container").classList.remove("hidden");
+  const pill = document.getElementById("user-pill");
+  if (currentUser?.email) {
+    pill.textContent = currentUser.email;
+    pill.classList.remove("hidden");
+  }
+}
+
+// ============================================================
+// Supabase data layer — wraps every cloud mutation
+// ============================================================
+async function fetchAllFromSupabase() {
+  if (!currentUser) return;
+  try {
+    const [w, b, s] = await Promise.all([
+      sb.from("workouts").select("*").order("date", { ascending: false }),
+      sb.from("body_logs").select("*").order("date", { ascending: false }),
+      sb.from("user_settings").select("*").eq("user_id", currentUser.id).maybeSingle(),
+    ]);
+    if (w.error) throw w.error;
+    if (b.error) throw b.error;
+    if (s.error) throw s.error;
+    state.workouts = (w.data || []).map(row => ({
+      id: row.id,
+      date: row.date,
+      split: row.split,
+      exercises: row.exercises || [],
+    }));
+    state.bodyLogs = (b.data || []).map(row => ({
+      id: row.id,
+      date: row.date,
+      weight: row.weight,
+      bodyFat: row.body_fat,
+      waist: row.waist,
+      notes: row.notes,
+    }));
+    if (s.data) {
+      state.settings = { units: s.data.units || "kg" };
+    } else {
+      await sb.from("user_settings").insert({ user_id: currentUser.id, units: "kg" });
+      state.settings = { units: "kg" };
+    }
+    saveCache();
+  } catch (e) {
+    console.error("Fetch from Supabase failed:", e);
+    toast("Couldn't load from cloud: " + e.message);
+  }
+}
+
+async function dbInsertWorkout(workout) {
+  const { error } = await sb.from("workouts").insert({
+    id: workout.id,
+    user_id: currentUser.id,
+    date: workout.date,
+    split: workout.split,
+    exercises: workout.exercises,
+  });
+  if (error) { console.error("Insert workout failed:", error); toast("Cloud save failed: " + error.message); }
+}
+
+async function dbDeleteWorkout(id) {
+  const { error } = await sb.from("workouts").delete().eq("id", id);
+  if (error) console.error("Delete workout failed:", error);
+}
+
+async function dbInsertBodyLog(entry) {
+  const { error } = await sb.from("body_logs").insert({
+    id: entry.id,
+    user_id: currentUser.id,
+    date: entry.date,
+    weight: entry.weight,
+    body_fat: entry.bodyFat,
+    waist: entry.waist,
+    notes: entry.notes,
+  });
+  if (error) console.error("Insert body log failed:", error);
+}
+
+async function dbDeleteBodyLog(id) {
+  const { error } = await sb.from("body_logs").delete().eq("id", id);
+  if (error) console.error("Delete body log failed:", error);
+}
+
+async function dbUpdateSettings(updates) {
+  const { error } = await sb.from("user_settings").upsert({
+    user_id: currentUser.id,
+    ...updates,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) console.error("Update settings failed:", error);
 }
 
 // ============================================================
@@ -826,8 +1018,6 @@ function render() {
   renderRecovery();
   renderProgress();
   renderTrends();
-  renderSyncCard();
-  updateSyncStatus();
 }
 
 // ============================================================
@@ -1043,116 +1233,6 @@ function renderTrendTable(history) {
   `;
 }
 
-function renderSyncCard() {
-  const body = document.getElementById("sync-card-body");
-  if (!body) return;
-  const cfg = syncConfig();
-  if (!cfg.enabled) {
-    body.innerHTML = `
-      <p style="color: var(--text-dim); font-size: 13px; margin-top: 0;">
-        Stores your workouts in a private GitHub repo so they survive across devices, browser clears, and time.
-      </p>
-      <ol style="font-size: 13px; color: var(--text-dim); padding-left: 18px; line-height: 1.6;">
-        <li>Create a new <strong>private repo</strong> on GitHub (e.g. <code>workout-data</code>) — leave it empty.</li>
-        <li>Go to <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color: var(--accent);">github.com/settings/personal-access-tokens/new</a></li>
-        <li>Token type: <strong>Fine-grained</strong>. Repository access: only the repo from step 1.</li>
-        <li>Permissions → Repository → <strong>Contents: Read and write</strong>.</li>
-        <li>Copy the token (starts with <code>github_pat_</code>) and paste it below.</li>
-      </ol>
-      <div class="body-log-form" style="margin-top: 12px;">
-        <label>GitHub Personal Access Token
-          <input type="password" id="sync-pat" placeholder="github_pat_…">
-        </label>
-        <label>Repo (owner/repo-name)
-          <input type="text" id="sync-repo" placeholder="josephjoshuangushual-create/workout-data">
-        </label>
-        <button class="primary" id="btn-sync-connect">Connect & sync</button>
-      </div>
-    `;
-    document.getElementById("btn-sync-connect").onclick = setupSync;
-    return;
-  }
-  const lastStr = cfg.lastSyncedAt
-    ? new Date(cfg.lastSyncedAt).toLocaleString()
-    : "never";
-  body.innerHTML = `
-    <div style="font-size: 13px;">
-      <div><strong>Repo:</strong> <code>${cfg.repo}</code></div>
-      <div><strong>File:</strong> <code>${cfg.path}</code></div>
-      <div><strong>Last synced:</strong> ${lastStr}</div>
-      ${cfg.lastError ? `<div style="color: var(--bad); margin-top: 6px;">⚠ ${cfg.lastError}</div>` : ""}
-    </div>
-    <div style="display: flex; gap: 8px; margin-top: 14px;">
-      <button class="primary" id="btn-sync-now">Sync now</button>
-      <button class="ghost" id="btn-sync-pull">Pull from remote</button>
-      <button class="ghost danger" id="btn-sync-disconnect">Disconnect</button>
-    </div>
-  `;
-  document.getElementById("btn-sync-now").onclick = async () => {
-    updateSyncStatus("syncing");
-    const result = await syncPush();
-    updateSyncStatus(result.ok ? "synced" : "error");
-    toast(result.ok ? "Synced to GitHub." : "Sync failed: " + result.reason);
-    renderSyncCard();
-  };
-  document.getElementById("btn-sync-pull").onclick = async () => {
-    if (!confirm("Pull from remote — this will merge remote workouts into local. Continue?")) return;
-    updateSyncStatus("syncing");
-    const result = await syncPull();
-    updateSyncStatus(result.ok ? "synced" : "error");
-    toast(result.ok ? "Pulled from GitHub." : "Pull failed: " + result.reason);
-    render();
-  };
-  document.getElementById("btn-sync-disconnect").onclick = () => {
-    if (!confirm("Disconnect sync? Your PAT will be removed from this browser. Remote data stays untouched.")) return;
-    state.settings.sync = { enabled: false, pat: "", repo: "", path: "workouts.json", fileSha: null, lastSyncedAt: null, lastError: null };
-    saveState();
-    updateSyncStatus();
-    renderSyncCard();
-    toast("Sync disconnected.");
-  };
-}
-
-async function setupSync() {
-  const pat = document.getElementById("sync-pat").value.trim();
-  const repo = document.getElementById("sync-repo").value.trim();
-  if (!pat || !repo) {
-    toast("Enter both a token and a repo.");
-    return;
-  }
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-    toast("Repo must be in 'owner/repo-name' format.");
-    return;
-  }
-  // Temporarily configure to test
-  state.settings.sync = {
-    enabled: true, pat, repo, path: "workouts.json",
-    fileSha: null, lastSyncedAt: null, lastError: null,
-  };
-  saveState();
-  updateSyncStatus("syncing");
-  // Try pulling first — if file exists, merge it in
-  const pull = await syncPull();
-  if (!pull.ok) {
-    state.settings.sync.enabled = false;
-    saveState();
-    updateSyncStatus();
-    renderSyncCard();
-    toast("Connection failed: " + pull.reason);
-    return;
-  }
-  // Then push current (possibly-merged) state
-  const push = await syncPush();
-  if (!push.ok) {
-    toast("Push failed: " + push.reason);
-  } else {
-    toast("Sync set up. Workouts will auto-sync from now on.");
-  }
-  updateSyncStatus(push.ok ? "synced" : "error");
-  renderSyncCard();
-  render();
-}
-
 function renderProgress() {
   const list = document.getElementById("body-log-list");
   if (!list) return;
@@ -1187,9 +1267,8 @@ function renderProgress() {
       const id = btn.dataset.deleteBody;
       if (!confirm("Delete this entry?")) return;
       state.bodyLogs = state.bodyLogs.filter(e => e.id !== id);
-      if (!state.deletedIds.includes(id)) state.deletedIds.push(id);
       saveState();
-      schedulePush();
+      dbDeleteBodyLog(id);
       renderProgress();
     };
   });
@@ -1214,7 +1293,7 @@ function logBodyEntry() {
   };
   state.bodyLogs.push(entry);
   saveState();
-  schedulePush();
+  dbInsertBodyLog(entry);
   document.getElementById("body-weight").value = "";
   document.getElementById("body-fat").value = "";
   document.getElementById("body-waist").value = "";
@@ -1525,12 +1604,16 @@ function saveWorkout() {
     exercises: completed.map(ex => ({
       name: ex.name,
       muscles: ex.muscles,
-      sets: ex.sets.map(s => ({ reps: s.reps, weight: s.weight })),
+      sets: ex.sets.map(s => ({
+        reps: s.reps,
+        weight: s.weight,
+        ...(s.pr ? { pr: true } : {}),
+      })),
     })),
   };
   state.workouts.unshift(workout);
   saveState();
-  schedulePush();
+  dbInsertWorkout(workout);
   workInProgress = null;
   stopRestTimer();
   render();
@@ -1580,9 +1663,8 @@ function renderHistory() {
       const id = btn.dataset.delete;
       if (!confirm("Delete this workout?")) return;
       state.workouts = state.workouts.filter(w => w.id !== id);
-      if (!state.deletedIds.includes(id)) state.deletedIds.push(id);
       saveState();
-      schedulePush();
+      dbDeleteWorkout(id);
       render();
     };
   });
@@ -1602,193 +1684,19 @@ function renderRecovery() {
 }
 
 // ============================================================
-// GitHub sync — stores workouts.json in a private repo for cross-device durability
+// [GitHub sync removed — replaced by Supabase data layer above]
 // ============================================================
-function syncConfig() { return state.settings.sync; }
-function syncEnabled() { return syncConfig().enabled && syncConfig().pat && syncConfig().repo; }
+// Stub so existing call sites don't throw. schedulePush now triggers Supabase
+// mutations from the specific db* function calls — no centralized push needed.
+function schedulePush() {}
+function updateSyncStatus() {}
+function renderSyncCard() {}
 
-async function githubApi(method, path, body) {
-  const cfg = syncConfig();
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      "Authorization": `Bearer ${cfg.pat}`,
-      "Accept": "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GitHub ${method} ${path} → ${res.status}: ${text.slice(0, 200)}`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
+// Original GitHub sync code stripped — kept only the no-op stubs above so
+// older call sites still compile. The new data layer lives at the top of
+// the script (Supabase client + db* functions).
+function _removed_syncConfig() { return null; }
 
-// b64 encode/decode that handles UTF-8 safely
-function b64encode(str) {
-  return btoa(unescape(encodeURIComponent(str)));
-}
-function b64decode(str) {
-  return decodeURIComponent(escape(atob(str.replace(/\n/g, ""))));
-}
-
-async function syncPull() {
-  if (!syncEnabled()) return { ok: false, reason: "Sync not configured" };
-  const cfg = syncConfig();
-  try {
-    const data = await githubApi("GET", `/repos/${cfg.repo}/contents/${cfg.path}`);
-    const remoteJson = b64decode(data.content);
-    const remote = JSON.parse(remoteJson);
-    cfg.fileSha = data.sha;
-    mergeRemoteIntoLocal(remote);
-    cfg.lastSyncedAt = new Date().toISOString();
-    cfg.lastError = null;
-    saveState();
-    return { ok: true };
-  } catch (e) {
-    // 404 = file doesn't exist yet — that's fine, treat as empty remote
-    if (e.message.includes("404")) {
-      cfg.fileSha = null;
-      cfg.lastSyncedAt = new Date().toISOString();
-      cfg.lastError = null;
-      saveState();
-      return { ok: true, empty: true };
-    }
-    cfg.lastError = e.message;
-    saveState();
-    return { ok: false, reason: e.message };
-  }
-}
-
-async function syncPush() {
-  if (!syncEnabled()) return { ok: false, reason: "Sync not configured" };
-  const cfg = syncConfig();
-  try {
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      workouts: state.workouts,
-      bodyLogs: state.bodyLogs,
-      deletedIds: state.deletedIds,
-    };
-    const body = {
-      message: `Workout coach sync ${new Date().toISOString()}`,
-      content: b64encode(JSON.stringify(payload, null, 2)),
-    };
-    if (cfg.fileSha) body.sha = cfg.fileSha;
-    const data = await githubApi("PUT", `/repos/${cfg.repo}/contents/${cfg.path}`, body);
-    cfg.fileSha = data.content.sha;
-    cfg.lastSyncedAt = new Date().toISOString();
-    cfg.lastError = null;
-    saveState();
-    return { ok: true };
-  } catch (e) {
-    // 409 / sha mismatch: someone else pushed first. Pull and retry once.
-    if (e.message.includes("409") || e.message.includes("sha")) {
-      const pull = await syncPull();
-      if (!pull.ok) {
-        cfg.lastError = "Push failed and pull-retry failed: " + (pull.reason || "");
-        saveState();
-        return { ok: false, reason: cfg.lastError };
-      }
-      // Retry push with fresh sha
-      try {
-        const payload = {
-          version: 1,
-          exportedAt: new Date().toISOString(),
-          workouts: state.workouts,
-          bodyLogs: state.bodyLogs,
-          deletedIds: state.deletedIds,
-        };
-        const body2 = {
-          message: `Workout coach sync ${new Date().toISOString()} (retry)`,
-          content: b64encode(JSON.stringify(payload, null, 2)),
-          sha: cfg.fileSha,
-        };
-        const data2 = await githubApi("PUT", `/repos/${cfg.repo}/contents/${cfg.path}`, body2);
-        cfg.fileSha = data2.content.sha;
-        cfg.lastSyncedAt = new Date().toISOString();
-        cfg.lastError = null;
-        saveState();
-        return { ok: true };
-      } catch (e2) {
-        cfg.lastError = e2.message;
-        saveState();
-        return { ok: false, reason: e2.message };
-      }
-    }
-    cfg.lastError = e.message;
-    saveState();
-    return { ok: false, reason: e.message };
-  }
-}
-
-// Merge remote workouts/bodyLogs into local. Union by id; tombstones (deletedIds)
-// on either side win. Last-write-wins on conflicts (by ISO date string).
-function mergeRemoteIntoLocal(remote) {
-  const tombstones = new Set([...(state.deletedIds || []), ...(remote.deletedIds || [])]);
-  state.deletedIds = [...tombstones];
-  const byId = new Map();
-  for (const w of (remote.workouts || [])) byId.set(w.id, w);
-  for (const w of state.workouts) {
-    const existing = byId.get(w.id);
-    if (!existing || new Date(w.date) > new Date(existing.date)) byId.set(w.id, w);
-  }
-  state.workouts = [...byId.values()]
-    .filter(w => !tombstones.has(w.id))
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  const bodyById = new Map();
-  for (const b of (remote.bodyLogs || [])) bodyById.set(b.id, b);
-  for (const b of state.bodyLogs) {
-    const existing = bodyById.get(b.id);
-    if (!existing || new Date(b.date) > new Date(existing.date)) bodyById.set(b.id, b);
-  }
-  state.bodyLogs = [...bodyById.values()].filter(b => !tombstones.has(b.id));
-}
-
-// Fire-and-forget push after save. Updates status indicator.
-let pushPending = false;
-function schedulePush() {
-  if (!syncEnabled() || pushPending) return;
-  pushPending = true;
-  updateSyncStatus("syncing");
-  syncPush().then(result => {
-    pushPending = false;
-    updateSyncStatus(result.ok ? "synced" : "error");
-    if (!result.ok) toast("Sync failed: " + result.reason);
-    renderSyncCard();
-  });
-}
-
-function updateSyncStatus(state) {
-  const el = document.getElementById("sync-status-pill");
-  if (!el) return;
-  if (!syncEnabled()) { el.classList.add("hidden"); return; }
-  el.classList.remove("hidden");
-  const cfg = syncConfig();
-  if (state === "syncing") {
-    el.textContent = "↻ syncing";
-    el.className = "sync-pill syncing";
-    return;
-  }
-  if (state === "error" || cfg.lastError) {
-    el.textContent = "⚠ sync error";
-    el.className = "sync-pill error";
-    return;
-  }
-  if (cfg.lastSyncedAt) {
-    const mins = Math.round((Date.now() - new Date(cfg.lastSyncedAt).getTime()) / 60000);
-    el.textContent = mins < 1 ? "✓ synced" : mins < 60 ? `✓ ${mins}m ago` : `✓ ${Math.round(mins / 60)}h ago`;
-    el.className = "sync-pill ok";
-    return;
-  }
-  el.textContent = "↻ not synced";
-  el.className = "sync-pill";
-}
 
 // ============================================================
 // Rest timer
@@ -1869,15 +1777,42 @@ function exportJSON() {
 
 function importJSON(file) {
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const parsed = JSON.parse(e.target.result);
       if (!parsed.workouts || !Array.isArray(parsed.workouts)) throw new Error("Invalid format");
-      if (!confirm(`Replace current data with ${parsed.workouts.length} workouts from file?`)) return;
-      state = parsed;
-      saveState();
+      const workoutCount = parsed.workouts.length;
+      const bodyCount = (parsed.bodyLogs || []).length;
+      if (!confirm(`Import ${workoutCount} workouts and ${bodyCount} body logs into your cloud account? This MERGES with existing data — duplicates by id are skipped.`)) return;
+      toast("Importing…");
+      // Upsert into Supabase (ignore conflict on id so re-imports are idempotent)
+      if (workoutCount > 0) {
+        const rows = parsed.workouts.map(w => ({
+          id: w.id,
+          user_id: currentUser.id,
+          date: w.date,
+          split: w.split,
+          exercises: w.exercises || [],
+        }));
+        const { error } = await sb.from("workouts").upsert(rows, { onConflict: "id" });
+        if (error) throw new Error("Workout import: " + error.message);
+      }
+      if (bodyCount > 0) {
+        const rows = parsed.bodyLogs.map(b => ({
+          id: b.id,
+          user_id: currentUser.id,
+          date: b.date,
+          weight: b.weight,
+          body_fat: b.bodyFat,
+          waist: b.waist,
+          notes: b.notes,
+        }));
+        const { error } = await sb.from("body_logs").upsert(rows, { onConflict: "id" });
+        if (error) throw new Error("Body log import: " + error.message);
+      }
+      await fetchAllFromSupabase();
       render();
-      toast("Imported.");
+      toast(`Imported ${workoutCount} workouts, ${bodyCount} body logs.`);
     } catch (err) {
       toast("Import failed: " + err.message);
     }
@@ -1918,23 +1853,68 @@ function updateUnitsButton() {
 document.getElementById("btn-units").onclick = () => {
   state.settings.units = state.settings.units === "kg" ? "lbs" : "kg";
   saveState();
+  dbUpdateSettings({ units: state.settings.units });
   updateUnitsButton();
   render();
   toast(`Switched to ${unitLabel()}.`);
 };
-updateUnitsButton();
 
-render();
+// ============================================================
+// Auth wiring + boot
+// ============================================================
+document.getElementById("btn-signout").onclick = doSignOut;
+document.getElementById("btn-auth-send").onclick = async () => {
+  const email = document.getElementById("auth-email").value.trim();
+  const status = document.getElementById("auth-status");
+  status.className = "auth-status";
+  if (!email || !email.includes("@")) {
+    status.textContent = "Enter a valid email.";
+    status.classList.add("error");
+    return;
+  }
+  status.textContent = "Sending…";
+  try {
+    await signInWithEmail(email);
+    status.textContent = "Magic link sent. Check your inbox and click the link to sign in.";
+    status.classList.add("ok");
+  } catch (e) {
+    status.textContent = "Failed: " + e.message;
+    status.classList.add("error");
+  }
+};
+document.getElementById("auth-email").addEventListener("keypress", e => {
+  if (e.key === "Enter") document.getElementById("btn-auth-send").click();
+});
 
-// Auto-pull on app load (background; doesn't block UI)
-if (syncEnabled()) {
-  updateSyncStatus("syncing");
-  syncPull().then(result => {
-    updateSyncStatus(result.ok ? "synced" : "error");
-    if (result.ok) render();
-    else if (result.reason) console.warn("Auto-pull failed:", result.reason);
-  });
-}
+// Listen for auth changes (magic-link redirect updates the session)
+sb.auth.onAuthStateChange((event, session) => {
+  if (event === "SIGNED_IN" && session?.user) {
+    currentUser = session.user;
+    showApp();
+    loadCache();
+    updateUnitsButton();
+    render();
+    fetchAllFromSupabase().then(() => render());
+  } else if (event === "SIGNED_OUT") {
+    showAuthScreen();
+  }
+});
+
+// Initial session check on page load
+(async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session?.user) {
+    currentUser = session.user;
+    showApp();
+    loadCache();
+    updateUnitsButton();
+    render();
+    await fetchAllFromSupabase();
+    render();
+  } else {
+    showAuthScreen();
+  }
+})();
 </script>
 </body>
 </html>
