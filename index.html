@@ -364,20 +364,28 @@ const LIBRARY = {
       { name: "Lateral Raises", muscles: ["shoulders"], defaultSets: 4, defaultReps: 12 },
     ],
     [
-      { name: "Incline Dumbbell Press", muscles: ["chest", "shoulders", "triceps"], defaultSets: 4, defaultReps: 8 },
+      { name: "Incline Barbell Bench Press", muscles: ["chest", "shoulders", "triceps"], defaultSets: 4, defaultReps: 8 },
       { name: "Tricep Pushdowns", muscles: ["triceps"], defaultSets: 4, defaultReps: 12 },
+    ],
+    [
+      { name: "Incline Dumbbell Press", muscles: ["chest", "shoulders", "triceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Overhead Dumbbell Press", muscles: ["shoulders", "triceps"], defaultSets: 3, defaultReps: 10 },
+    ],
+    [
+      { name: "Pec Deck", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
+      { name: "Tricep Extensions", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
     ],
     [
       { name: "Shoulder Press", muscles: ["shoulders", "triceps"], defaultSets: 3, defaultReps: 8 },
       { name: "Cable Fly", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
     ],
     [
-      { name: "Dips", muscles: ["chest", "triceps"], defaultSets: 3, defaultReps: 8 },
+      { name: "Dumbbell Chest Fly", muscles: ["chest"], defaultSets: 3, defaultReps: 12 },
       { name: "Overhead Cable Fly", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
     ],
     [
+      { name: "Dips", muscles: ["chest", "triceps"], defaultSets: 3, defaultReps: 8 },
       { name: "Push-ups", muscles: ["chest", "triceps", "shoulders"], defaultSets: 3, defaultReps: 15 },
-      { name: "Tricep Extensions", muscles: ["triceps"], defaultSets: 3, defaultReps: 12 },
     ],
   ],
   pull: [
@@ -390,16 +398,24 @@ const LIBRARY = {
       { name: "Preacher Curls", muscles: ["biceps"], defaultSets: 4, defaultReps: 10 },
     ],
     [
+      { name: "T-Bar Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Reverse Dumbbell Fly", muscles: ["rear-delts"], defaultSets: 3, defaultReps: 12 },
+    ],
+    [
       { name: "Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
       { name: "Face Pulls", muscles: ["rear-delts", "back"], defaultSets: 3, defaultReps: 15 },
     ],
     [
-      { name: "Seated Cable Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
-      { name: "Single Arm Bicep Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Single Arm Lat Pulldown", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Cable Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 12 },
     ],
     [
-      { name: "T-Bar Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
-      { name: "Reverse Dumbbell Fly", muscles: ["rear-delts"], defaultSets: 3, defaultReps: 12 },
+      { name: "Single Arm Kneeling Lat Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Reverse Pec Deck", muscles: ["rear-delts"], defaultSets: 3, defaultReps: 12 },
+    ],
+    [
+      { name: "Chest-Supported Row", muscles: ["back", "biceps"], defaultSets: 3, defaultReps: 10 },
+      { name: "Single Arm Bicep Curls", muscles: ["biceps"], defaultSets: 3, defaultReps: 10 },
     ],
   ],
   legs: [
@@ -412,12 +428,20 @@ const LIBRARY = {
       { name: "Hip Thrust", muscles: ["glutes", "hamstrings"], defaultSets: 4, defaultReps: 10 },
     ],
     [
+      { name: "Deadlifts (Conventional)", muscles: ["back", "hamstrings", "glutes"], defaultSets: 3, defaultReps: 5 },
+      { name: "Nordic Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 6 },
+    ],
+    [
       { name: "Bulgarian Split Squats", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 10 },
       { name: "Leg Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 12 },
     ],
     [
+      { name: "High Box Step Ups", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 8 },
       { name: "Leg Extensions", muscles: ["quads"], defaultSets: 3, defaultReps: 12 },
-      { name: "Nordic Curls", muscles: ["hamstrings"], defaultSets: 3, defaultReps: 6 },
+    ],
+    [
+      { name: "Adductors", muscles: ["quads", "glutes"], defaultSets: 3, defaultReps: 15 },
+      { name: "Abductors", muscles: ["glutes"], defaultSets: 3, defaultReps: 15 },
     ],
     [
       { name: "Standing Calf Raises", muscles: ["calves"], defaultSets: 4, defaultReps: 12 },
